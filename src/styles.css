@@ -77,3 +77,4 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 3px; }
 .status { margin-left: auto; }
 .status.error { color: #d83a52; }
 .status.ok { color: #00854d; }
+.empty .error { color: #d83a52; font-size: 12px; max-width: 480px; }

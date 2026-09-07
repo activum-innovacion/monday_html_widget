@@ -35,9 +35,16 @@
 
   /* ---------------- Persistencia ---------------- */
 
+  function withTimeout(promise, ms, label) {
+    return new Promise(function (resolve, reject) {
+      var t = setTimeout(function () { reject(new Error(label + ' no respondió en ' + ms + ' ms')); }, ms);
+      promise.then(function (v) { clearTimeout(t); resolve(v); }, function (e) { clearTimeout(t); reject(e); });
+    });
+  }
+
   function loadStored() {
     if (inMonday) {
-      return monday.storage.instance.getItem(STORAGE_KEY).then(function (res) {
+      return withTimeout(monday.storage.instance.getItem(STORAGE_KEY), 8000, 'monday.storage').then(function (res) {
         var raw = res && res.data && res.data.value;
         return raw ? safeParse(raw) : null;
       });
@@ -120,6 +127,15 @@
     var headRe = /<head[^>]*>/i;
     if (headRe.test(html)) return html.replace(headRe, function (m) { return m + base + boot; });
     return '<!doctype html><html><head><meta charset="utf-8">' + base + boot + '</head><body>' + html + '</body></html>';
+  }
+
+  function showError(msg) {
+    console.error('[html-widget]', msg);
+    var p = document.createElement('p');
+    p.className = 'error';
+    p.textContent = 'Error: ' + msg;
+    empty.appendChild(p);
+    empty.hidden = false;
   }
 
   function render() {
@@ -226,6 +242,8 @@
       applyContext({ theme: 'light', user: {} });
     }
 
+    render(); // estado vacío visible mientras carga el storage
+
     loadStored().then(function (stored) {
       if (stored) {
         state.html = stored.html || '';
@@ -233,6 +251,8 @@
         state.limit = stored.limit || 100;
       }
       return refresh();
+    }).catch(function (err) {
+      showError((err && err.message) || String(err));
     });
   }
 
