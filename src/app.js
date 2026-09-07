@@ -234,6 +234,7 @@
   }
 
   function init() {
+    console.log('[html-widget] iniciado', { sdk: hasSdk, inMonday: inMonday, url: location.href });
     if (inMonday) {
       monday.listen('context', function (res) { applyContext(res.data); if (!state.editing) refresh(); });
       monday.listen('settings', function (res) { state.settings = res.data || {}; if (!state.editing) render(); });
