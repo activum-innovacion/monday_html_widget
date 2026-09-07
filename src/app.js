@@ -135,9 +135,13 @@
   function fetchBoards() {
     var ids = boardIds();
     if (!inMonday || !state.loadBoards || !ids.length) return Promise.resolve(null);
-    return monday.api(BOARDS_QUERY, { variables: { ids: ids, limit: state.limit } })
-      .then(function (res) { return (res && res.data && res.data.boards) || []; })
-      .catch(function (err) { console.error('[html-widget] error cargando tableros', err); return { error: String(err) }; });
+    return withTimeout(monday.api(BOARDS_QUERY, { variables: { ids: ids, limit: state.limit } }), 20000, 'monday.api(boards)')
+      .then(function (res) {
+        console.log('[html-widget] boards', res);
+        if (res && res.errors) return { error: JSON.stringify(res.errors) };
+        return (res && res.data && res.data.boards) || [];
+      })
+      .catch(function (err) { console.error('[html-widget] error cargando tableros', err); return { error: (err && err.message) || String(err) }; });
   }
 
   /* ---------------- Render ---------------- */
@@ -185,12 +189,16 @@
 
   function render() {
     var has = !!(state.html && state.html.trim());
+    console.log('[html-widget] render', { chars: state.html.length, boards: !!state.boards });
     viewer.classList.toggle('is-empty', !has);
     empty.hidden = has;
     frame.srcdoc = has ? buildSrcdoc(state.html) : '';
   }
 
   function refresh() {
+    // Pinta ya con los datos que haya y actualiza cuando lleguen los del tablero.
+    render();
+    if (!inMonday || !state.loadBoards) return Promise.resolve();
     return fetchBoards().then(function (b) { state.boards = b; render(); });
   }
 
