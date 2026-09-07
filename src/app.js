@@ -17,7 +17,9 @@
   var STORAGE_KEY = 'html_widget_v1';
   var hasSdk = typeof window.mondaySdk === 'function';
   var inMonday = hasSdk && window.self !== window.top;
-  var monday = hasSdk ? window.mondaySdk() : null;
+  // withoutScrollHelper: el SDK inyecta un overlay fijo a pantalla completa que puede hacer que el
+  // navegador considere ocluido el iframe del contenido y deje de pintarlo.
+  var monday = hasSdk ? window.mondaySdk({ withoutScrollHelper: true }) : null;
 
   var state = {
     context: null,
@@ -278,7 +280,15 @@
     console.log('[html-widget] render', { chars: state.html.length, boards: !!state.boards });
     viewer.classList.toggle('is-empty', !has);
     empty.hidden = has;
-    frame.srcdoc = has ? buildSrcdoc(state.html) : '';
+    // Se crea un iframe nuevo en cada render: cambiar srcdoc sobre un iframe ya cargado
+    // deja el contenido sin pintar en Chrome hasta que algo fuerza un repintado.
+    var fresh = document.createElement('iframe');
+    fresh.id = 'frame';
+    fresh.title = frame.title;
+    fresh.setAttribute('sandbox', frame.getAttribute('sandbox'));
+    if (has) fresh.srcdoc = buildSrcdoc(state.html);
+    frame.replaceWith(fresh);
+    frame = fresh;
     var warn = $('storage-warn');
     warn.hidden = !state.storageError;
     warn.textContent = state.storageError ? 'monday storage no disponible (' + state.storageError + ')' : '';
