@@ -42,26 +42,67 @@
     });
   }
 
+  // Clave por instancia para el storage global (por si el storage de instancia no está disponible).
+  function globalKey() {
+    var id = (state.context && state.context.instanceId) || 'default';
+    return STORAGE_KEY + ':' + id;
+  }
+
+  function describe(res) {
+    try { return JSON.stringify(res); } catch (e) { return String(res); }
+  }
+
+  function readValue(res) {
+    var raw = res && res.data && res.data.value;
+    return raw ? safeParse(raw) : null;
+  }
+
+  function localGet() {
+    try { return safeParse(localStorage.getItem(globalKey())); } catch (e) { return null; }
+  }
+  function localSet(raw) {
+    try { localStorage.setItem(globalKey(), raw); } catch (e) {}
+  }
+
   function loadStored() {
-    if (inMonday) {
-      return withTimeout(monday.storage.instance.getItem(STORAGE_KEY), 8000, 'monday.storage').then(function (res) {
-        var raw = res && res.data && res.data.value;
-        return raw ? safeParse(raw) : null;
+    if (!inMonday) return Promise.resolve(localGet());
+    return withTimeout(monday.storage.instance.getItem(STORAGE_KEY), 8000, 'monday.storage.instance')
+      .then(function (res) {
+        console.log('[html-widget] instance.getItem', res);
+        var v = readValue(res);
+        if (v) return v;
+        return withTimeout(monday.storage.getItem(globalKey()), 8000, 'monday.storage').then(function (res2) {
+          console.log('[html-widget] storage.getItem', res2);
+          return readValue(res2) || localGet();
+        });
+      })
+      .catch(function (err) {
+        console.warn('[html-widget] fallo leyendo storage, usando localStorage', err);
+        return localGet();
       });
-    }
-    try { return Promise.resolve(safeParse(localStorage.getItem(STORAGE_KEY))); }
-    catch (e) { return Promise.resolve(null); }
   }
 
   function saveStored(payload) {
     var raw = JSON.stringify(payload);
-    if (inMonday) {
-      return monday.storage.instance.setItem(STORAGE_KEY, raw).then(function (res) {
-        if (res && res.data && res.data.success === false) throw new Error('No se pudo guardar en monday storage');
+    localSet(raw); // copia local siempre, como último respaldo
+    if (!inMonday) return Promise.resolve({ where: 'localStorage' });
+
+    var ok = function (res) { return res && res.data && res.data.success !== false && !res.data.error && !res.error; };
+
+    return withTimeout(monday.storage.instance.setItem(STORAGE_KEY, raw), 8000, 'monday.storage.instance')
+      .then(function (res) {
+        console.log('[html-widget] instance.setItem', res);
+        if (ok(res)) return { where: 'instance' };
+        return withTimeout(monday.storage.setItem(globalKey(), raw), 8000, 'monday.storage').then(function (res2) {
+          console.log('[html-widget] storage.setItem', res2);
+          if (ok(res2)) return { where: 'global' };
+          throw new Error('instance: ' + describe(res) + ' | global: ' + describe(res2));
+        });
+      })
+      .catch(function (err) {
+        console.error('[html-widget] no se pudo guardar en monday storage', err);
+        return { where: 'localStorage', error: (err && err.message) || String(err) };
       });
-    }
-    try { localStorage.setItem(STORAGE_KEY, raw); } catch (e) {}
-    return Promise.resolve();
   }
 
   function safeParse(raw) {
@@ -203,13 +244,19 @@
     state.loadBoards = optBoard.checked;
     state.limit = Math.max(1, Math.min(500, parseInt(optLimit.value, 10) || 100));
     saveStored({ html: state.html, loadBoards: state.loadBoards, limit: state.limit })
-      .then(function () {
-        setStatus('Guardado', 'ok');
+      .then(function (r) {
         if (inMonday) monday.execute('valueCreatedForUser');
+        if (r.error) {
+          // Guardado solo en este navegador: avisar pero seguir funcionando.
+          setStatus('Guardado solo en este navegador. monday storage falló: ' + r.error, 'error');
+          if (inMonday) monday.execute('notice', { message: 'HTML guardado solo en este navegador (monday storage no disponible)', type: 'error', timeout: 8000 });
+          render();
+          return refresh();
+        }
+        setStatus('Guardado', 'ok');
         closeEditor();
         return refresh();
       })
-      .catch(function (err) { setStatus('Error: ' + (err.message || err), 'error'); })
       .then(function () { btn.disabled = false; });
   });
 
@@ -245,7 +292,14 @@
 
     render(); // estado vacío visible mientras carga el storage
 
-    loadStored().then(function (stored) {
+    // Esperar al contexto (necesario para instanceId) antes de leer el storage.
+    var ctxReady = inMonday
+      ? withTimeout(monday.get('context'), 5000, 'monday.get(context)')
+          .then(function (res) { applyContext(res.data); })
+          .catch(function (err) { console.warn('[html-widget] sin contexto', err); })
+      : Promise.resolve();
+
+    ctxReady.then(loadStored).then(function (stored) {
       if (stored) {
         state.html = stored.html || '';
         state.loadBoards = !!stored.loadBoards;
