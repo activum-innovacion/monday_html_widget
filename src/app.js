@@ -163,7 +163,11 @@
       boards: state.boards,
       theme: (state.context && state.context.theme) || 'light'
     };
-    var boot = bootstrapScript(payload);
+    var dark = payload.theme !== 'light';
+    // Estilos base según el tema de monday; el HTML del usuario puede sobrescribirlos.
+    var baseStyle = '<style>html,body{margin:0;padding:0}body{padding:8px;font-family:Figtree,Roboto,"Helvetica Neue",Arial,sans-serif;font-size:14px;color:' +
+      (dark ? '#d5d8df' : '#323338') + ';background:transparent}a{color:#0073ea}</style>';
+    var boot = baseStyle + bootstrapScript(payload);
     var base = '<base target="_blank">';
     var headRe = /<head[^>]*>/i;
     if (headRe.test(html)) return html.replace(headRe, function (m) { return m + base + boot; });
