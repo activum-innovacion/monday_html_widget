@@ -1,0 +1,275 @@
+/*
+ * HTML Widget para monday.com
+ * ---------------------------
+ * - Guarda el código HTML por instancia de widget (monday.storage.instance).
+ * - Renderiza el HTML en un iframe aislado (sandbox) con scripts habilitados.
+ * - Expone al HTML del usuario:
+ *     window.monday.context  -> contexto del widget (tablero, usuario, tema…)
+ *     window.monday.settings -> settings del widget
+ *     window.monday.boards   -> datos del tablero (opcional, si se activa)
+ *     window.monday.api(query, variables) -> ejecuta GraphQL contra monday vía puente postMessage
+ *     window.monday.execute(type, params) -> monday.execute (p.ej. abrir un ítem)
+ * - Fuera de monday (abriendo la URL directamente) usa localStorage para poder probar en local.
+ */
+(function () {
+  'use strict';
+
+  var STORAGE_KEY = 'html_widget_v1';
+  var hasSdk = typeof window.mondaySdk === 'function';
+  var inMonday = hasSdk && window.self !== window.top;
+  var monday = hasSdk ? window.mondaySdk() : null;
+
+  var state = {
+    context: null,
+    settings: {},
+    html: '',
+    loadBoards: false,
+    limit: 100,
+    boards: null,
+    editing: false
+  };
+
+  var $ = function (id) { return document.getElementById(id); };
+  var viewer = $('viewer'), editor = $('editor'), frame = $('frame'), empty = $('empty');
+  var code = $('code'), optBoard = $('opt-board'), optLimit = $('opt-limit'), status = $('status');
+
+  /* ---------------- Persistencia ---------------- */
+
+  function loadStored() {
+    if (inMonday) {
+      return monday.storage.instance.getItem(STORAGE_KEY).then(function (res) {
+        var raw = res && res.data && res.data.value;
+        return raw ? safeParse(raw) : null;
+      });
+    }
+    try { return Promise.resolve(safeParse(localStorage.getItem(STORAGE_KEY))); }
+    catch (e) { return Promise.resolve(null); }
+  }
+
+  function saveStored(payload) {
+    var raw = JSON.stringify(payload);
+    if (inMonday) {
+      return monday.storage.instance.setItem(STORAGE_KEY, raw).then(function (res) {
+        if (res && res.data && res.data.success === false) throw new Error('No se pudo guardar en monday storage');
+      });
+    }
+    try { localStorage.setItem(STORAGE_KEY, raw); } catch (e) {}
+    return Promise.resolve();
+  }
+
+  function safeParse(raw) {
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (e) { return { html: String(raw) }; }
+  }
+
+  /* ---------------- Datos del tablero ---------------- */
+
+  function boardIds() {
+    var c = state.context || {};
+    if (Array.isArray(c.boardIds) && c.boardIds.length) return c.boardIds;
+    if (c.boardId) return [c.boardId];
+    return [];
+  }
+
+  var BOARDS_QUERY =
+    'query ($ids: [ID!], $limit: Int) {' +
+    '  boards(ids: $ids) {' +
+    '    id name description' +
+    '    columns { id title type settings_str }' +
+    '    groups { id title color }' +
+    '    items_page(limit: $limit) {' +
+    '      cursor' +
+    '      items { id name group { id title } column_values { id text value type } }' +
+    '    }' +
+    '  }' +
+    '}';
+
+  function fetchBoards() {
+    var ids = boardIds();
+    if (!inMonday || !state.loadBoards || !ids.length) return Promise.resolve(null);
+    return monday.api(BOARDS_QUERY, { variables: { ids: ids, limit: state.limit } })
+      .then(function (res) { return (res && res.data && res.data.boards) || []; })
+      .catch(function (err) { console.error('[html-widget] error cargando tableros', err); return { error: String(err) }; });
+  }
+
+  /* ---------------- Render ---------------- */
+
+  function bootstrapScript(payload) {
+    // Se inyecta en el iframe ANTES del HTML del usuario.
+    return '<script>(function(){' +
+      'var seq=0,pending={};' +
+      'function call(type,data){return new Promise(function(res,rej){var id=++seq;pending[id]={res:res,rej:rej};' +
+      'parent.postMessage({source:"html-widget",type:type,id:id,data:data},"*");});}' +
+      'window.addEventListener("message",function(e){var m=e.data;if(!m||m.source!=="html-widget-host")return;' +
+      'var p=pending[m.id];if(!p)return;delete pending[m.id];m.error?p.rej(new Error(m.error)):p.res(m.result);});' +
+      'window.monday=' + JSON.stringify(payload) + ';' +
+      'window.monday.api=function(q,v){return call("api",{query:q,variables:v||{}});};' +
+      'window.monday.execute=function(t,p){return call("execute",{type:t,params:p||{}});};' +
+      '})();<\/script>';
+  }
+
+  function buildSrcdoc(html) {
+    var payload = {
+      context: state.context,
+      settings: state.settings,
+      boards: state.boards,
+      theme: (state.context && state.context.theme) || 'light'
+    };
+    var boot = bootstrapScript(payload);
+    var base = '<base target="_blank">';
+    var headRe = /<head[^>]*>/i;
+    if (headRe.test(html)) return html.replace(headRe, function (m) { return m + base + boot; });
+    return '<!doctype html><html><head><meta charset="utf-8">' + base + boot + '</head><body>' + html + '</body></html>';
+  }
+
+  function render() {
+    var has = !!(state.html && state.html.trim());
+    viewer.classList.toggle('is-empty', !has);
+    empty.hidden = has;
+    frame.srcdoc = has ? buildSrcdoc(state.html) : '';
+  }
+
+  function refresh() {
+    return fetchBoards().then(function (b) { state.boards = b; render(); });
+  }
+
+  /* ---------------- Puente postMessage (iframe -> monday) ---------------- */
+
+  window.addEventListener('message', function (e) {
+    var m = e.data;
+    if (!m || m.source !== 'html-widget' || e.source !== frame.contentWindow) return;
+    var reply = function (result, error) {
+      frame.contentWindow.postMessage({ source: 'html-widget-host', id: m.id, result: result, error: error }, '*');
+    };
+    if (!inMonday) return reply(null, 'Solo disponible dentro de monday.com');
+    var p;
+    if (m.type === 'api') p = monday.api(m.data.query, { variables: m.data.variables });
+    else if (m.type === 'execute') p = monday.execute(m.data.type, m.data.params);
+    else return reply(null, 'Tipo de mensaje desconocido: ' + m.type);
+    p.then(function (r) { reply(r); }).catch(function (err) { reply(null, (err && err.message) || String(err)); });
+  });
+
+  /* ---------------- Editor ---------------- */
+
+  function openEditor() {
+    state.editing = true;
+    code.value = state.html;
+    optBoard.checked = state.loadBoards;
+    optLimit.value = state.limit;
+    setStatus('');
+    viewer.hidden = true;
+    editor.hidden = false;
+    code.focus();
+  }
+
+  function closeEditor() {
+    state.editing = false;
+    editor.hidden = true;
+    viewer.hidden = false;
+  }
+
+  function setStatus(msg, cls) {
+    status.textContent = msg || '';
+    status.className = 'status' + (cls ? ' ' + cls : '');
+  }
+
+  $('btn-edit').addEventListener('click', openEditor);
+  $('btn-cancel').addEventListener('click', closeEditor);
+  $('btn-example').addEventListener('click', function () {
+    code.value = EXAMPLE;
+    optBoard.checked = true;
+  });
+  $('btn-save').addEventListener('click', function () {
+    var btn = this;
+    btn.disabled = true;
+    setStatus('Guardando…');
+    state.html = code.value;
+    state.loadBoards = optBoard.checked;
+    state.limit = Math.max(1, Math.min(500, parseInt(optLimit.value, 10) || 100));
+    saveStored({ html: state.html, loadBoards: state.loadBoards, limit: state.limit })
+      .then(function () {
+        setStatus('Guardado', 'ok');
+        if (inMonday) monday.execute('valueCreatedForUser');
+        closeEditor();
+        return refresh();
+      })
+      .catch(function (err) { setStatus('Error: ' + (err.message || err), 'error'); })
+      .then(function () { btn.disabled = false; });
+  });
+
+  code.addEventListener('keydown', function (e) {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      var s = code.selectionStart, t = code.selectionEnd;
+      code.value = code.value.slice(0, s) + '  ' + code.value.slice(t);
+      code.selectionStart = code.selectionEnd = s + 2;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); $('btn-save').click(); }
+  });
+
+  /* ---------------- Arranque ---------------- */
+
+  function applyContext(ctx) {
+    state.context = ctx || {};
+    document.documentElement.setAttribute('data-theme', state.context.theme || 'light');
+    // Los usuarios de solo lectura no pueden editar.
+    var u = state.context.user || {};
+    $('btn-edit').hidden = !!(u.isViewOnly || u.isGuest);
+  }
+
+  function init() {
+    if (inMonday) {
+      monday.listen('context', function (res) { applyContext(res.data); if (!state.editing) refresh(); });
+      monday.listen('settings', function (res) { state.settings = res.data || {}; if (!state.editing) render(); });
+      monday.listen('events', function () { if (!state.editing && state.loadBoards) refresh(); });
+    } else {
+      applyContext({ theme: 'light', user: {} });
+    }
+
+    loadStored().then(function (stored) {
+      if (stored) {
+        state.html = stored.html || '';
+        state.loadBoards = !!stored.loadBoards;
+        state.limit = stored.limit || 100;
+      }
+      return refresh();
+    });
+  }
+
+  var EXAMPLE = [
+    '<!doctype html>',
+    '<html>',
+    '<head>',
+    '  <meta charset="utf-8">',
+    '  <style>',
+    '    body { font-family: Figtree, Roboto, sans-serif; margin: 16px; color: #323338; }',
+    '    body.dark { color: #d5d8df; }',
+    '    .card { border: 1px solid #d0d4e4; border-radius: 8px; padding: 12px; margin-bottom: 8px; }',
+    '    .count { font-size: 32px; font-weight: 700; }',
+    '  </style>',
+    '</head>',
+    '<body>',
+    '  <h2>Resumen del tablero</h2>',
+    '  <div id="out">Cargando…</div>',
+    '  <script>',
+    '    if (monday.theme !== "light") document.body.classList.add("dark");',
+    '    var boards = monday.boards || [];',
+    '    if (!boards.length) {',
+    '      document.getElementById("out").textContent =',
+    '        "Activa \\"Inyectar datos del tablero\\" en el editor para ver datos aquí.";',
+    '    } else {',
+    '      document.getElementById("out").innerHTML = boards.map(function (b) {',
+    '        var items = b.items_page.items;',
+    '        return "<div class=card><strong>" + b.name + "</strong>" +',
+    '               "<div class=count>" + items.length + "</div>ítems cargados</div>";',
+    '      }).join("");',
+    '    }',
+    '    // También puedes lanzar tus propias consultas GraphQL:',
+    '    // monday.api("query { me { name } }").then(function (r) { console.log(r.data.me.name); });',
+    '  </script>',
+    '</body>',
+    '</html>'
+  ].join('\n');
+
+  init();
+})();

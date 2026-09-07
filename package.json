@@ -1,0 +1,9 @@
+{
+  "name": "monday-html-widget",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Widget personalizado para monday.com que renderiza código HTML/CSS/JS arbitrario",
+  "scripts": {
+    "dev": "npx --yes serve -l 3000 ."
+  }
+}

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HTML Widget para monday.com</title>
+  <link rel="stylesheet" href="./src/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/monday-sdk-js@0.5/dist/main.js"></script>
+</head>
+<body>
+  <div id="app">
+
+    <!-- Vista: HTML renderizado en un iframe aislado -->
+    <section id="viewer">
+      <iframe id="frame" title="Contenido HTML" sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"></iframe>
+      <div id="empty" class="empty" hidden>
+        <p><strong>Este widget aún no tiene contenido.</strong></p>
+        <p>Pulsa <em>Editar</em> para pegar tu código HTML.</p>
+      </div>
+      <button id="btn-edit" class="fab" type="button" title="Editar HTML">✎ Editar</button>
+    </section>
+
+    <!-- Editor -->
+    <section id="editor" hidden>
+      <header class="editor-bar">
+        <span class="title">Código HTML del widget</span>
+        <div class="actions">
+          <button id="btn-example" type="button" class="ghost">Cargar ejemplo</button>
+          <button id="btn-cancel" type="button" class="ghost">Cancelar</button>
+          <button id="btn-save" type="button" class="primary">Guardar</button>
+        </div>
+      </header>
+
+      <textarea id="code" spellcheck="false" placeholder="<h1>Hola monday</h1>"></textarea>
+
+      <footer class="editor-options">
+        <label class="opt">
+          <input id="opt-board" type="checkbox">
+          Inyectar datos del tablero en <code>window.monday.boards</code>
+        </label>
+        <label class="opt">
+          Máx. ítems por tablero
+          <input id="opt-limit" type="number" min="1" max="500" value="100">
+        </label>
+        <span id="status" class="status"></span>
+      </footer>
+    </section>
+
+  </div>
+  <script src="./src/app.js"></script>
+</body>
+</html>
