@@ -4,6 +4,8 @@
   "private": true,
   "description": "Widget personalizado para monday.com que renderiza código HTML/CSS/JS arbitrario",
   "scripts": {
-    "dev": "npx --yes serve -l 3000 ."
+    "dev": "npx --yes serve -l 3000 .",
+    "build:dist": "rm -rf dist && mkdir dist && cp -R index.html src vendor dist/",
+    "deploy:monday": "npm run build:dist && npx -y @mondaycom/apps-cli code:push -c -d dist -i $MONDAY_APP_VERSION_ID"
   }
 }

@@ -72,3 +72,15 @@ Para publicar cambios de código basta con hacer push: Vercel redespliega y mond
 - El HTML se ejecuta con `sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"`, sin `allow-same-origin`, por lo que no puede leer cookies ni el DOM del host.
 - Solo pueden editar el código usuarios que no sean *view only* ni invitados.
 - El acceso a la API se hace con el token de sesión del usuario que visualiza el widget y sus permisos.
+
+## Alternativa: alojar el widget en el CDN de monday (CLI)
+
+Si la URL personalizada no se guarda en el Developer Center, puedes subir el build al hosting de monday con su CLI:
+
+```bash
+npm i -g @mondaycom/apps-cli
+mapps init -t TU_TOKEN_DE_API      # token en monday → Developers → My access tokens
+MONDAY_APP_VERSION_ID=123456 npm run deploy:monday
+```
+
+El `APP_VERSION_ID` aparece en el Developer Center, pestaña **App Versions**. Después, en la feature → **Deployment**, elige la opción **CLI (client-side)** con subruta `/`.
