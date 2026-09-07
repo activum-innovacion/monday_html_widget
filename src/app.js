@@ -164,6 +164,7 @@
       .then(function (v) { return v || localGet(); })
       .catch(function (err) {
         console.warn('[html-widget] fallo leyendo storage, usando localStorage', err);
+        state.storageError = 'lectura: ' + ((err && err.message) || String(err));
         return localGet();
       });
   }
@@ -173,7 +174,7 @@
     if (!inMonday) return Promise.resolve({ where: 'localStorage' });
 
     return saveTo(makeStore('instance'), payload)
-      .then(function () { return { where: 'instance' }; })
+      .then(function () { state.storageError = null; return { where: 'instance' }; })
       .catch(function (err1) {
         console.warn('[html-widget] storage de instancia falló, probando global', err1);
         return saveTo(makeStore('global'), payload)
@@ -181,6 +182,7 @@
           .catch(function (err2) {
             var msg = (err1 && err1.message || err1) + ' | ' + (err2 && err2.message || err2);
             console.error('[html-widget] no se pudo guardar en monday storage', msg);
+            state.storageError = 'escritura: ' + msg;
             return { where: 'localStorage', error: msg };
           });
       });
@@ -277,6 +279,9 @@
     viewer.classList.toggle('is-empty', !has);
     empty.hidden = has;
     frame.srcdoc = has ? buildSrcdoc(state.html) : '';
+    var warn = $('storage-warn');
+    warn.hidden = !state.storageError;
+    warn.textContent = state.storageError ? 'monday storage no disponible (' + state.storageError + ')' : '';
   }
 
   function refresh() {

@@ -78,3 +78,9 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 3px; }
 .status.error { color: #d83a52; }
 .status.ok { color: #00854d; }
 .empty .error { color: #d83a52; font-size: 12px; max-width: 480px; }
+
+.storage-warn {
+  position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 2;
+  background: #d83a52; color: #fff; font-size: 11px; padding: 4px 8px; border-radius: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .9;
+}
