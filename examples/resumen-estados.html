@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: Figtree, Roboto, sans-serif; margin: 16px; color: #323338; background: transparent; }
+    body.dark { color: #d5d8df; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
+    .card { border-radius: 8px; padding: 12px; color: #fff; }
+    .card .n { font-size: 28px; font-weight: 700; line-height: 1; }
+    .card .l { font-size: 12px; opacity: .9; margin-top: 4px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid rgba(128,128,128,.25); }
+    tr.item { cursor: pointer; }
+    tr.item:hover td { background: rgba(0,115,234,.08); }
+    .muted { opacity: .7; font-size: 12px; }
+    select { font: inherit; padding: 4px 6px; margin-left: 8px; }
+  </style>
+</head>
+<body>
+  <h2 id="titulo">Resumen del tablero</h2>
+  <div id="out" class="muted">Cargando…</div>
+
+  <script>
+    if (monday.theme !== 'light') document.body.classList.add('dark');
+
+    var boards = monday.boards || [];
+    var out = document.getElementById('out');
+
+    if (!boards.length) {
+      out.textContent = 'Activa "Inyectar datos del tablero" en el editor del widget para ver datos aquí.';
+    } else {
+      var board = boards[0];
+      var items = board.items_page.items;
+      document.getElementById('titulo').textContent = board.name + ' · ' + items.length + ' ítems';
+
+      // Columnas de tipo estado del tablero
+      var statusCols = board.columns.filter(function (c) { return c.type === 'status'; });
+
+      function render(colId) {
+        var counts = {};
+        items.forEach(function (it) {
+          var cv = it.column_values.find(function (c) { return c.id === colId; });
+          var label = (cv && cv.text) || 'Sin estado';
+          counts[label] = (counts[label] || 0) + 1;
+        });
+
+        var palette = ['#00c875', '#fdab3d', '#e2445c', '#579bfc', '#a25ddc', '#784bd1', '#037f4c', '#c4c4c4'];
+        var html = '<div class="cards">' + Object.keys(counts).sort().map(function (k, i) {
+          return '<div class="card" style="background:' + palette[i % palette.length] + '">' +
+                 '<div class="n">' + counts[k] + '</div><div class="l">' + k + '</div></div>';
+        }).join('') + '</div>';
+
+        html += '<table><thead><tr><th>Ítem</th><th>Grupo</th><th>Estado</th></tr></thead><tbody>' +
+          items.slice(0, 15).map(function (it) {
+            var cv = it.column_values.find(function (c) { return c.id === colId; });
+            return '<tr class="item" data-id="' + it.id + '"><td>' + it.name + '</td><td>' +
+                   (it.group ? it.group.title : '') + '</td><td>' + ((cv && cv.text) || '—') + '</td></tr>';
+          }).join('') + '</tbody></table>';
+
+        if (items.length > 15) html += '<p class="muted">Mostrando 15 de ' + items.length + '</p>';
+        out.className = '';
+        out.innerHTML = html;
+
+        // Abrir la tarjeta del ítem al hacer clic
+        out.querySelectorAll('tr.item').forEach(function (tr) {
+          tr.addEventListener('click', function () {
+            monday.execute('openItemCard', { itemId: Number(tr.dataset.id) });
+          });
+        });
+      }
+
+      if (!statusCols.length) {
+        out.textContent = 'El tablero no tiene columnas de tipo Estado.';
+      } else {
+        var sel = document.createElement('select');
+        statusCols.forEach(function (c) {
+          var o = document.createElement('option'); o.value = c.id; o.textContent = c.title; sel.appendChild(o);
+        });
+        sel.addEventListener('change', function () { render(sel.value); });
+        document.getElementById('titulo').appendChild(sel);
+        render(statusCols[0].id);
+      }
+    }
+
+    // Ejemplo de consulta GraphQL propia (opcional):
+    // monday.api('query { me { name } }').then(function (r) { console.log('Hola', r.data.me.name); });
+  </script>
+</body>
+</html>
