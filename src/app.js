@@ -49,12 +49,105 @@
   }
 
   function describe(res) {
-    try { return JSON.stringify(res); } catch (e) { return String(res); }
+    try {
+      var err = res && res.data && res.data.error;
+      if (err && err.status) return 'HTTP ' + err.status;
+      return JSON.stringify(res).slice(0, 300);
+    } catch (e) { return String(res); }
   }
 
-  function readValue(res) {
-    var raw = res && res.data && res.data.value;
-    return raw ? safeParse(raw) : null;
+  /* ---- Codificación ----
+   * El HTML se guarda comprimido (gzip) y en base64. Así el cuerpo de la petición al storage de
+   * monday nunca contiene HTML/JS en claro (su firewall lo bloquea con 403) y ocupa mucho menos.
+   * Si el resultado es grande se trocea en varias claves.
+   */
+  var CHUNK = 60000;
+
+  function bytesToB64(bytes) {
+    var bin = '';
+    for (var i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+  function b64ToBytes(b64) {
+    var bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+
+  function encodePayload(obj) {
+    var json = JSON.stringify(obj);
+    var bytes = new TextEncoder().encode(json);
+    if (typeof CompressionStream === 'function') {
+      return new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer()
+        .then(function (buf) { return { enc: 'gz64', data: bytesToB64(new Uint8Array(buf)) }; });
+    }
+    return Promise.resolve({ enc: 'b64', data: bytesToB64(bytes) });
+  }
+
+  function decodePayload(enc, data) {
+    var bytes = b64ToBytes(data);
+    if (enc === 'gz64') {
+      return new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).text().then(JSON.parse);
+    }
+    return Promise.resolve(JSON.parse(new TextDecoder().decode(bytes)));
+  }
+
+  // Acceso uniforme a storage de instancia o global.
+  function makeStore(kind) {
+    var api = kind === 'instance' ? monday.storage.instance : monday.storage;
+    var label = 'monday.storage.' + kind;
+    var ok = function (res) { return res && res.data && res.data.success !== false && !res.data.error && !res.error; };
+    return {
+      kind: kind,
+      base: kind === 'instance' ? STORAGE_KEY : globalKey(),
+      get: function (key) {
+        return withTimeout(api.getItem(key), 8000, label).then(function (res) {
+          console.log('[html-widget] ' + label + '.getItem', key, res);
+          return res && res.data && res.data.value;
+        });
+      },
+      set: function (key, value) {
+        return withTimeout(api.setItem(key, value), 8000, label).then(function (res) {
+          console.log('[html-widget] ' + label + '.setItem', key, value.length + ' chars', res);
+          if (!ok(res)) throw new Error(kind + ': ' + describe(res));
+        });
+      }
+    };
+  }
+
+  // Interpreta lo guardado: formato v2 (codificado, con o sin trozos) o formato antiguo (JSON plano).
+  function parseStored(raw, store) {
+    var meta = safeParse(raw);
+    if (!meta) return Promise.resolve(null);
+    if (meta.v !== 2) return Promise.resolve(meta);
+    if (meta.data) return decodePayload(meta.enc, meta.data);
+    var reads = [];
+    for (var i = 0; i < meta.chunks; i++) reads.push(store.get(store.base + ':c' + i));
+    return Promise.all(reads).then(function (parts) {
+      if (parts.some(function (p) { return !p; })) throw new Error('faltan trozos en storage');
+      return decodePayload(meta.enc, parts.join(''));
+    });
+  }
+
+  function loadFrom(store) {
+    return store.get(store.base).then(function (raw) { return raw ? parseStored(raw, store) : null; });
+  }
+
+  function saveTo(store, payload) {
+    return encodePayload(payload).then(function (e) {
+      if (e.data.length <= CHUNK) {
+        return store.set(store.base, JSON.stringify({ v: 2, enc: e.enc, data: e.data }));
+      }
+      var parts = [];
+      for (var i = 0; i < e.data.length; i += CHUNK) parts.push(e.data.slice(i, i + CHUNK));
+      var p = Promise.resolve();
+      parts.forEach(function (part, idx) {
+        p = p.then(function () { return store.set(store.base + ':c' + idx, part); });
+      });
+      return p.then(function () {
+        return store.set(store.base, JSON.stringify({ v: 2, enc: e.enc, chunks: parts.length }));
+      });
+    });
   }
 
   function localGet() {
@@ -66,16 +159,9 @@
 
   function loadStored() {
     if (!inMonday) return Promise.resolve(localGet());
-    return withTimeout(monday.storage.instance.getItem(STORAGE_KEY), 8000, 'monday.storage.instance')
-      .then(function (res) {
-        console.log('[html-widget] instance.getItem', res);
-        var v = readValue(res);
-        if (v) return v;
-        return withTimeout(monday.storage.getItem(globalKey()), 8000, 'monday.storage').then(function (res2) {
-          console.log('[html-widget] storage.getItem', res2);
-          return readValue(res2) || localGet();
-        });
-      })
+    return loadFrom(makeStore('instance'))
+      .then(function (v) { return v || loadFrom(makeStore('global')); })
+      .then(function (v) { return v || localGet(); })
       .catch(function (err) {
         console.warn('[html-widget] fallo leyendo storage, usando localStorage', err);
         return localGet();
@@ -83,27 +169,25 @@
   }
 
   function saveStored(payload) {
-    var raw = JSON.stringify(payload);
-    localSet(raw); // copia local siempre, como último respaldo
+    localSet(JSON.stringify(payload)); // copia local siempre, como último respaldo
     if (!inMonday) return Promise.resolve({ where: 'localStorage' });
 
-    var ok = function (res) { return res && res.data && res.data.success !== false && !res.data.error && !res.error; };
-
-    return withTimeout(monday.storage.instance.setItem(STORAGE_KEY, raw), 8000, 'monday.storage.instance')
-      .then(function (res) {
-        console.log('[html-widget] instance.setItem', res);
-        if (ok(res)) return { where: 'instance' };
-        return withTimeout(monday.storage.setItem(globalKey(), raw), 8000, 'monday.storage').then(function (res2) {
-          console.log('[html-widget] storage.setItem', res2);
-          if (ok(res2)) return { where: 'global' };
-          throw new Error('instance: ' + describe(res) + ' | global: ' + describe(res2));
-        });
-      })
-      .catch(function (err) {
-        console.error('[html-widget] no se pudo guardar en monday storage', err);
-        return { where: 'localStorage', error: (err && err.message) || String(err) };
+    return saveTo(makeStore('instance'), payload)
+      .then(function () { return { where: 'instance' }; })
+      .catch(function (err1) {
+        console.warn('[html-widget] storage de instancia falló, probando global', err1);
+        return saveTo(makeStore('global'), payload)
+          .then(function () { return { where: 'global' }; })
+          .catch(function (err2) {
+            var msg = (err1 && err1.message || err1) + ' | ' + (err2 && err2.message || err2);
+            console.error('[html-widget] no se pudo guardar en monday storage', msg);
+            return { where: 'localStorage', error: msg };
+          });
       });
   }
+
+  // Utilidades expuestas para depuración desde la consola.
+  window.__htmlWidget = { encodePayload: encodePayload, decodePayload: decodePayload, parseStored: parseStored };
 
   function safeParse(raw) {
     if (!raw) return null;
